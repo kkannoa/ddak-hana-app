@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import {
-  StyleSheet, Text, View, TextInput, Pressable, Switch,
+  StyleSheet, Text, View, TextInput, Pressable,
   SafeAreaView, KeyboardAvoidingView, Platform, ScrollView,
   Animated, Easing, Dimensions,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
+import DateTimePicker from '@react-native-community/datetimepicker';
 
 // 앱이 열려 있을 때도 알림 배너가 뜨도록
 Notifications.setNotificationHandler({
@@ -19,26 +20,35 @@ Notifications.setNotificationHandler({
 });
 
 const STORAGE_KEY = 'ddakhana_v1';
-const REMINDER_KEY = 'ddakhana_reminder_v1';
 const DOW = ['일', '월', '화', '수', '목', '금', '토'];
 const CONFETTI_COLORS = ['#7C6BFF', '#34C77B', '#FF6B9D', '#FFC93C', '#4ECDC4', '#FF9F68'];
-// 알림 시간 프리셋 (고르는 부담을 줄이려고 몇 개만)
-const REMINDER_TIMES = [
-  { label: '아침 8시', hour: 8, minute: 0 },
-  { label: '점심 1시', hour: 13, minute: 0 },
-  { label: '저녁 7시', hour: 19, minute: 0 },
-  { label: '밤 10시', hour: 22, minute: 0 },
-];
 const isWeb = Platform.OS === 'web';
 
-// 매일 hour:minute에 반복되는 로컬 알림 예약 (기존 예약은 지우고 새로)
-async function scheduleDaily(hour, minute) {
+// 오늘의 목표를 위한 1회성 알람 예약 (기존 예약은 지우고 새로).
+// 정한 시각이 이미 지났으면 다음 날 그 시각으로.
+async function scheduleTaskAlarm(hour, minute, taskText) {
   if (isWeb) return;
   await Notifications.cancelAllScheduledNotificationsAsync();
+  const now = new Date();
+  const when = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute, 0, 0);
+  if (when.getTime() <= now.getTime()) when.setDate(when.getDate() + 1);
   await Notifications.scheduleNotificationAsync({
-    content: { title: '딱하나 🌱', body: '오늘의 딱 하나, 정했어?' },
-    trigger: { type: Notifications.SchedulableTriggerInputTypes.DAILY, hour, minute },
+    content: { title: '딱하나 🌱', body: `'${taskText}' 할 시간이야!` },
+    trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: when },
   });
+}
+
+async function cancelAlarms() {
+  if (isWeb) return;
+  try { await Notifications.cancelAllScheduledNotificationsAsync(); } catch (e) {}
+}
+
+// hour(0-23), minute → "오전 9:05"
+function fmtTime(hour, minute) {
+  const ampm = hour < 12 ? '오전' : '오후';
+  let h = hour % 12;
+  if (h === 0) h = 12;
+  return `${ampm} ${h}:${String(minute).padStart(2, '0')}`;
 }
 
 // 🎉 해냈을 때 위에서 쏟아지는 색종이 (네이티브 드라이버, 새 의존성 없음)
@@ -99,12 +109,46 @@ function Confetti({ count = 26 }) {
   );
 }
 
+// 웹 전용 간단 시간 스테퍼 (폰에선 네이티브 알람시계를 씀)
+function WebTimePicker({ hour, minute, onChange }) {
+  const bump = (dh, dm) => {
+    const h = (hour + dh + 24) % 24;
+    const m = (minute + dm + 60) % 60;
+    onChange({ hour: h, minute: m });
+  };
+  const h12 = hour % 12 === 0 ? 12 : hour % 12;
+  return (
+    <View style={styles.webPicker}>
+      <Pressable style={styles.webAmpm} onPress={() => onChange({ hour: (hour + 12) % 24, minute })}>
+        <Text style={styles.webAmpmText}>{hour < 12 ? '오전' : '오후'}</Text>
+      </Pressable>
+      <View style={styles.webCol}>
+        <Pressable style={styles.webStep} onPress={() => bump(1, 0)}><Text style={styles.webStepText}>▲</Text></Pressable>
+        <Text style={styles.webNum}>{String(h12).padStart(2, '0')}</Text>
+        <Pressable style={styles.webStep} onPress={() => bump(-1, 0)}><Text style={styles.webStepText}>▼</Text></Pressable>
+      </View>
+      <Text style={styles.webColon}>:</Text>
+      <View style={styles.webCol}>
+        <Pressable style={styles.webStep} onPress={() => bump(0, 5)}><Text style={styles.webStepText}>▲</Text></Pressable>
+        <Text style={styles.webNum}>{String(minute).padStart(2, '0')}</Text>
+        <Pressable style={styles.webStep} onPress={() => bump(0, -5)}><Text style={styles.webStepText}>▼</Text></Pressable>
+      </View>
+    </View>
+  );
+}
+
 // Date → 'YYYY-MM-DD'
 function keyOf(d) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
+}
+
+function yesterdayKey() {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  return keyOf(d);
 }
 
 // 연속 달성 일수
@@ -135,94 +179,124 @@ function buildCells(now) {
 }
 
 export default function App() {
-  const [data, setData] = useState({}); // { 'YYYY-MM-DD': { task, done } }
-  const [draft, setDraft] = useState('');
+  const [data, setData] = useState({}); // { 'YYYY-MM-DD': { task, done, alarm } }
   const [loaded, setLoaded] = useState(false);
   const [burst, setBurst] = useState(0); // 완료 순간에만 컨페티 발사
-  const [reminder, setReminder] = useState({ enabled: false, hour: 22, minute: 0 });
-  const [remindNote, setRemindNote] = useState('');
+
+  // 목표 정하기 흐름 상태
+  const [mode, setMode] = useState('input'); // 'choose'(어제 목표 보여주기) | 'input'
+  const [draft, setDraft] = useState('');
+  const [wantAlarm, setWantAlarm] = useState(false);
+  const [alarmTime, setAlarmTime] = useState({ hour: 21, minute: 0 });
+  const [showPicker, setShowPicker] = useState(false);
+  const [note, setNote] = useState('');
 
   const now = new Date();
   const tk = keyOf(now);
   const today = data[tk];
   const task = today ? today.task : '';
   const done = today ? today.done : false;
+  const alarm = today ? today.alarm : null;
+  const yTask = data[yesterdayKey()] ? data[yesterdayKey()].task : '';
   const streak = calcStreak(data);
   const { cells, year, month } = buildCells(now);
   const todayNum = now.getDate();
+
+  const alarmDate = new Date();
+  alarmDate.setHours(alarmTime.hour, alarmTime.minute, 0, 0);
 
   useEffect(() => {
     (async () => {
       try {
         const raw = await AsyncStorage.getItem(STORAGE_KEY);
-        if (raw) setData(JSON.parse(raw));
-        const rem = await AsyncStorage.getItem(REMINDER_KEY);
-        if (rem) setReminder(JSON.parse(rem));
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          setData(parsed);
+          // 어제 목표가 있으면 선택 화면부터
+          const yk = yesterdayKey();
+          if (parsed[yk] && parsed[yk].task) setMode('choose');
+        }
       } catch (e) {}
       setLoaded(true);
     })();
   }, []);
-
-  const persistReminder = async (next) => {
-    setReminder(next);
-    try { await AsyncStorage.setItem(REMINDER_KEY, JSON.stringify(next)); } catch (e) {}
-  };
-
-  const toggleReminder = async () => {
-    setRemindNote('');
-    if (reminder.enabled) {
-      if (!isWeb) { try { await Notifications.cancelAllScheduledNotificationsAsync(); } catch (e) {} }
-      persistReminder({ ...reminder, enabled: false });
-      return;
-    }
-    // 켜기: 권한 요청 → 예약
-    if (!isWeb) {
-      try {
-        const { status } = await Notifications.requestPermissionsAsync({
-          ios: { allowAlert: true, allowBadge: true, allowSound: true },
-        });
-        if (status !== 'granted') {
-          setRemindNote('알림 권한을 허용해줘요 🙏 (폰 설정에서 켤 수 있어요)');
-          return;
-        }
-        await scheduleDaily(reminder.hour, reminder.minute);
-      } catch (e) {
-        setRemindNote('알림을 못 켰어요. 폰에서 다시 시도해줘요');
-        return;
-      }
-    } else {
-      setRemindNote('웹에선 미리보기만 — 실제 알림은 폰에서 울려요 🔔');
-    }
-    persistReminder({ ...reminder, enabled: true });
-  };
-
-  const pickTime = async (t) => {
-    const next = { ...reminder, hour: t.hour, minute: t.minute };
-    if (reminder.enabled && !isWeb) {
-      try { await scheduleDaily(t.hour, t.minute); } catch (e) {}
-    }
-    persistReminder(next);
-  };
 
   const persist = async (next) => {
     setData(next);
     try { await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch (e) {}
   };
 
-  const commit = () => {
+  // 어제 목표를 오늘도 → 입력창에 채워두고 알람도 이어받기
+  const chooseSame = () => {
+    setDraft(yTask);
+    const ya = data[yesterdayKey()] ? data[yesterdayKey()].alarm : null;
+    if (ya) { setWantAlarm(true); setAlarmTime({ hour: ya.hour, minute: ya.minute }); }
+    setNote('');
+    setMode('input');
+  };
+  const chooseNew = () => {
+    setDraft('');
+    setWantAlarm(false);
+    setNote('');
+    setMode('input');
+  };
+
+  const onPickerChange = (event, selected) => {
+    if (Platform.OS === 'android') setShowPicker(false);
+    if (event.type === 'set' && selected) {
+      setAlarmTime({ hour: selected.getHours(), minute: selected.getMinutes() });
+    }
+  };
+
+  const commit = async () => {
     const v = draft.trim();
     if (!v) return;
-    persist({ ...data, [tk]: { task: v, done: false } });
+    setNote('');
+    let savedAlarm = null;
+
+    if (wantAlarm) {
+      if (isWeb) {
+        savedAlarm = { hour: alarmTime.hour, minute: alarmTime.minute };
+        setNote('웹에선 미리보기만 — 실제 알람은 폰에서 울려요 🔔');
+      } else {
+        try {
+          const { status } = await Notifications.requestPermissionsAsync({
+            ios: { allowAlert: true, allowBadge: true, allowSound: true },
+          });
+          if (status === 'granted') {
+            await scheduleTaskAlarm(alarmTime.hour, alarmTime.minute, v);
+            savedAlarm = { hour: alarmTime.hour, minute: alarmTime.minute };
+          } else {
+            setNote('알림 권한이 없어 목표만 저장했어요. 폰 설정에서 허용하면 다음엔 울려요 🙏');
+          }
+        } catch (e) {
+          setNote('알람 예약에 실패했어요. 목표는 저장했어요.');
+        }
+      }
+    } else {
+      await cancelAlarms();
+    }
+
+    persist({ ...data, [tk]: { task: v, done: false, alarm: savedAlarm } });
     setDraft('');
+    setWantAlarm(false);
   };
-  const markDone = () => {
-    persist({ ...data, [tk]: { task, done: true } });
+
+  const markDone = async () => {
+    await cancelAlarms(); // 다 했으니 알람은 그만
+    persist({ ...data, [tk]: { ...today, done: true } });
     setBurst((b) => b + 1);
   };
-  const reset = () => {
+
+  const reset = async () => {
+    await cancelAlarms();
     const next = { ...data };
     delete next[tk];
-    persist(next);
+    await persist(next);
+    setDraft('');
+    setWantAlarm(false);
+    setNote('');
+    setMode(yTask ? 'choose' : 'input');
   };
 
   if (!loaded) return <View style={styles.safe} />;
@@ -238,8 +312,22 @@ export default function App() {
           <Text style={styles.brand}>✺ 딱하나</Text>
 
           <View style={styles.card}>
-            {/* ── 상태 1: 아직 안 정함 ── */}
-            {!task && (
+            {/* ── 상태 1a: 어제 목표 보여주고 선택 ── */}
+            {!task && mode === 'choose' && yTask ? (
+              <>
+                <Text style={styles.label}>어제의 딱 하나</Text>
+                <Text style={styles.taskText}>{yTask}</Text>
+                <Pressable style={styles.btn} onPress={chooseSame}>
+                  <Text style={styles.btnText}>오늘도 이걸로 하기</Text>
+                </Pressable>
+                <Pressable style={styles.ghost} onPress={chooseNew}>
+                  <Text style={styles.ghostText}>새로운 목표 정하기</Text>
+                </Pressable>
+              </>
+            ) : null}
+
+            {/* ── 상태 1b: 목표 입력 + 상세 설정(알림) ── */}
+            {!task && !(mode === 'choose' && yTask) ? (
               <>
                 <Text style={styles.prompt}>오늘, 딱 하나만 한다면{'\n'}뭐 할래?</Text>
                 <TextInput
@@ -250,19 +338,62 @@ export default function App() {
                   placeholderTextColor="#b8b2c9"
                   maxLength={60}
                   returnKeyType="done"
-                  onSubmitEditing={commit}
                 />
+
+                {/* 상세 설정: 알림 */}
+                <Pressable style={styles.checkRow} onPress={() => setWantAlarm((v) => !v)}>
+                  <View style={[styles.checkbox, wantAlarm && styles.checkboxOn]}>
+                    {wantAlarm ? <Text style={styles.checkMark}>✓</Text> : null}
+                  </View>
+                  <Text style={styles.checkLabel}>정한 시간에 알림 받기 🔔</Text>
+                </Pressable>
+
+                {wantAlarm ? (
+                  <View style={styles.pickerWrap}>
+                    {isWeb ? (
+                      <WebTimePicker hour={alarmTime.hour} minute={alarmTime.minute} onChange={setAlarmTime} />
+                    ) : (
+                      <>
+                        <Pressable style={styles.timeBtn} onPress={() => setShowPicker(true)}>
+                          <Text style={styles.timeBtnText}>⏰ {fmtTime(alarmTime.hour, alarmTime.minute)}</Text>
+                          <Text style={styles.timeBtnEdit}>바꾸기</Text>
+                        </Pressable>
+                        {showPicker ? (
+                          <DateTimePicker
+                            value={alarmDate}
+                            mode="time"
+                            is24Hour={false}
+                            display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                            onChange={onPickerChange}
+                          />
+                        ) : null}
+                      </>
+                    )}
+                  </View>
+                ) : null}
+
                 <Pressable style={styles.btn} onPress={commit}>
                   <Text style={styles.btnText}>이걸로 정하기</Text>
                 </Pressable>
+
+                {yTask ? (
+                  <Pressable style={styles.ghost} onPress={() => setMode('choose')}>
+                    <Text style={styles.ghostText}>← 어제 목표 다시 보기</Text>
+                  </Pressable>
+                ) : null}
+
+                {note ? <Text style={styles.note}>{note}</Text> : null}
               </>
-            )}
+            ) : null}
 
             {/* ── 상태 2: 정했지만 아직 못함 ── */}
-            {task && !done && (
+            {task && !done ? (
               <>
                 <Text style={styles.label}>오늘의 딱 하나</Text>
                 <Text style={styles.taskText}>{task}</Text>
+                {alarm ? (
+                  <Text style={styles.alarmInfo}>🔔 {fmtTime(alarm.hour, alarm.minute)}에 알려줄게요</Text>
+                ) : null}
                 <Pressable style={[styles.btn, styles.doneBtn]} onPress={markDone}>
                   <Text style={styles.btnText}>🎉 해냈다!</Text>
                 </Pressable>
@@ -270,10 +401,10 @@ export default function App() {
                   <Text style={styles.ghostText}>다른 걸로 바꾸기</Text>
                 </Pressable>
               </>
-            )}
+            ) : null}
 
             {/* ── 상태 3: 해냄! ── */}
-            {task && done && (
+            {task && done ? (
               <>
                 <Text style={styles.emoji}>🌟</Text>
                 <Text style={styles.doneTitle}>오늘 해냈어!</Text>
@@ -282,17 +413,17 @@ export default function App() {
                   <Text style={styles.ghostText}>다른 걸로 바꾸기</Text>
                 </Pressable>
               </>
-            )}
+            ) : null}
 
             {/* ── 스트릭 ── */}
-            {streak > 0 && (
+            {streak > 0 ? (
               <View style={styles.streakRow}>
                 <Text style={styles.fire}>🔥</Text>
                 <Text style={styles.streakText}>
                   <Text style={styles.streakNum}>{streak}</Text>일 연속!
                 </Text>
               </View>
-            )}
+            ) : null}
           </View>
 
           {/* ── 캘린더 ── */}
@@ -318,43 +449,6 @@ export default function App() {
                 );
               })}
             </View>
-          </View>
-
-          {/* ── 매일 알림 ── */}
-          <View style={[styles.card, styles.remindCard]}>
-            <View style={styles.remindHeader}>
-              <View style={styles.flex}>
-                <Text style={styles.remindTitle}>🔔 매일 알림</Text>
-                <Text style={styles.remindSub}>
-                  {reminder.enabled ? '이 시간에 살짝 알려줄게요' : '까먹지 않게 매일 한 번 알려줄까요?'}
-                </Text>
-              </View>
-              <Switch
-                value={reminder.enabled}
-                onValueChange={toggleReminder}
-                trackColor={{ false: '#E5E1F0', true: '#C4BBFF' }}
-                thumbColor={reminder.enabled ? '#7C6BFF' : '#fff'}
-              />
-            </View>
-
-            {reminder.enabled && (
-              <View style={styles.timeRow}>
-                {REMINDER_TIMES.map((t) => {
-                  const active = t.hour === reminder.hour && t.minute === reminder.minute;
-                  return (
-                    <Pressable
-                      key={t.label}
-                      style={[styles.timeChip, active && styles.timeChipOn]}
-                      onPress={() => pickTime(t)}
-                    >
-                      <Text style={[styles.timeChipText, active && styles.timeChipTextOn]}>{t.label}</Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            )}
-
-            {remindNote ? <Text style={styles.remindNote}>{remindNote}</Text> : null}
           </View>
 
           <Text style={styles.foot}>계획은 그만. 오늘 딱 하나만. 🌱</Text>
@@ -385,6 +479,7 @@ const styles = StyleSheet.create({
 
   label: { fontSize: 13, fontWeight: '700', color: '#6B6480', marginBottom: 10 },
   taskText: { fontSize: 25, fontWeight: '900', color: '#2B2340', lineHeight: 34, marginBottom: 22 },
+  alarmInfo: { fontSize: 14, fontWeight: '700', color: '#7C6BFF', marginTop: -8, marginBottom: 20 },
 
   btn: {
     width: '100%', backgroundColor: '#7C6BFF', borderRadius: 16, paddingVertical: 16,
@@ -396,21 +491,42 @@ const styles = StyleSheet.create({
   ghost: { width: '100%', paddingVertical: 14, alignItems: 'center', marginTop: 8 },
   ghostText: { color: '#8b83a3', fontSize: 15, fontWeight: '700' },
 
+  // 상세 설정: 알림 체크 + 시간
+  checkRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 18 },
+  checkbox: {
+    width: 24, height: 24, borderRadius: 7, borderWidth: 2, borderColor: '#D9D2EC',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  checkboxOn: { backgroundColor: '#7C6BFF', borderColor: '#7C6BFF' },
+  checkMark: { color: '#fff', fontSize: 14, fontWeight: '900' },
+  checkLabel: { fontSize: 15, fontWeight: '700', color: '#2B2340' },
+
+  pickerWrap: { marginTop: 14, alignItems: 'center' },
+  timeBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    width: '100%', backgroundColor: '#F3F0FF', borderRadius: 14, paddingHorizontal: 18, paddingVertical: 14,
+  },
+  timeBtnText: { fontSize: 18, fontWeight: '800', color: '#2B2340' },
+  timeBtnEdit: { fontSize: 14, fontWeight: '700', color: '#7C6BFF' },
+
+  // 웹 스테퍼
+  webPicker: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10,
+    backgroundColor: '#F3F0FF', borderRadius: 14, paddingVertical: 14, width: '100%',
+  },
+  webAmpm: { backgroundColor: '#fff', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8, marginRight: 4 },
+  webAmpmText: { fontSize: 14, fontWeight: '800', color: '#7C6BFF' },
+  webCol: { alignItems: 'center', gap: 2 },
+  webStep: { paddingHorizontal: 10, paddingVertical: 2 },
+  webStepText: { fontSize: 14, color: '#7C6BFF', fontWeight: '900' },
+  webNum: { fontSize: 24, fontWeight: '900', color: '#2B2340', minWidth: 34, textAlign: 'center' },
+  webColon: { fontSize: 24, fontWeight: '900', color: '#2B2340' },
+
+  note: { fontSize: 12.5, color: '#a49dba', marginTop: 14, lineHeight: 18, textAlign: 'center' },
+
   emoji: { fontSize: 54, textAlign: 'center', marginBottom: 6 },
   doneTitle: { fontSize: 23, fontWeight: '900', color: '#2B2340', textAlign: 'center', marginBottom: 8 },
   doneSub: { fontSize: 15, color: '#6B6480', textAlign: 'center', lineHeight: 22 },
-
-  // 알림
-  remindCard: { marginTop: 16, padding: 22 },
-  remindHeader: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  remindTitle: { fontSize: 16, fontWeight: '800', color: '#2B2340' },
-  remindSub: { fontSize: 13, color: '#8b83a3', marginTop: 3 },
-  timeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 16 },
-  timeChip: { paddingHorizontal: 14, paddingVertical: 9, borderRadius: 12, backgroundColor: '#F3F0FF' },
-  timeChipOn: { backgroundColor: '#7C6BFF' },
-  timeChipText: { fontSize: 13, fontWeight: '700', color: '#6B6480' },
-  timeChipTextOn: { color: '#fff' },
-  remindNote: { fontSize: 12.5, color: '#a49dba', marginTop: 14, lineHeight: 18 },
 
   // 스트릭
   streakRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 22 },
