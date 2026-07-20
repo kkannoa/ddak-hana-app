@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "ddak-hana-app",
+    "name": "딱하나",
     "slug": "ddak-hana-app",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -10,6 +10,11 @@
       "supportsTablet": true
     },
     "android": {
+      "package": "com.we285.ddakhana",
+      "permissions": [
+        "android.permission.SCHEDULE_EXACT_ALARM",
+        "android.permission.USE_EXACT_ALARM"
+      ],
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -21,7 +26,26 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "@react-native-community/datetimepicker"
-    ]
+      "@react-native-community/datetimepicker",
+      [
+        "expo-notifications",
+        {
+          "color": "#7C6BFF"
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "b6fe1fca-26e1-43cf-9cb3-f9c4d641f15a"
+      }
+    },
+    "owner": "kannoa",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/b6fe1fca-26e1-43cf-9cb3-f9c4d641f15a",
+      "checkAutomatically": "NEVER"
+    }
   }
 }
