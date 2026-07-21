@@ -29,7 +29,7 @@ const TIMER_ID = 'ddakhana-timer';
 const DURATIONS = [5, 10, 15, 30, 60];
 const MAX_MINUTES = 600; // 10시간
 // 화면 맨 아래에 표시 — 어떤 버전이 돌고 있는지 눈으로 바로 확인하려고
-const BUILD_TAG = 'v2.1 · 하단 여백 수정 📐';
+const BUILD_TAG = 'v2.2 · 완료함 🎯';
 const DOW = ['일', '월', '화', '수', '목', '금', '토'];
 const CONFETTI_COLORS = ['#7C6BFF', '#34C77B', '#FF6B9D', '#FFC93C', '#4ECDC4', '#FF9F68'];
 const isWeb = Platform.OS === 'web';
@@ -235,6 +235,12 @@ function calcStreak(data) {
   return streak;
 }
 
+// 완료 시각(ms) → "7월 15일"
+function fmtDoneAt(ms) {
+  const d = new Date(ms);
+  return `${d.getMonth() + 1}월 ${d.getDate()}일`;
+}
+
 // 'YYYY-MM-DD' → "7월 15일 (화)"
 function fmtDay(key) {
   const [y, m, d] = key.split('-').map(Number);
@@ -283,6 +289,8 @@ export default function App() {
 
   // 지난 기록 들여다보기 — 보기 전용, 고칠 수는 없다
   const [peekKey, setPeekKey] = useState(null);
+  // 완료함 — 끝낸 일회성 목표들의 진열장
+  const [showArchive, setShowArchive] = useState(false);
 
   // 새 버전 알림 — 자동 적용 대신 사용자가 확인하고 받는다
   const [updateState, setUpdateState] = useState('idle'); // 'idle' | 'available' | 'downloading' | 'failed'
@@ -305,6 +313,8 @@ export default function App() {
   const canStart = startMinutes >= 1;
   // 끝낸 일회성 목표는 풀에서 빠진다 (기록은 남기고 눈앞에서만 치운다)
   const pool = goals.filter((g) => !g.doneAt);
+  // 완료함 — 최근에 끝낸 것부터
+  const archive = goals.filter((g) => g.doneAt).sort((a, b) => b.doneAt - a.doneAt);
   const todayGoal = today && today.goalId ? goals.find((g) => g.id === today.goalId) : null;
   const streak = calcStreak(data);
   const { cells, year, month } = buildCells(now);
@@ -856,7 +866,27 @@ export default function App() {
 
           {/* ── 캘린더 / 지난 기록 (같은 자리에서 갈아끼움) ── */}
           <View style={[styles.card, styles.calCard]}>
-            {peek ? (
+            {showArchive ? (
+              /* 완료함 — 끝내서 풀을 떠난 목표들. 진열만 하고 되돌리진 않는다 */
+              <>
+                <Text style={styles.calTitle}>🎯 완료함</Text>
+                <Text style={styles.arcLead}>딱 한 번만 하기로 하고, 진짜로 끝낸 것들</Text>
+                <View style={styles.arcList}>
+                  {archive.map((g) => (
+                    <View key={g.id} style={styles.arcRow}>
+                      <Text style={styles.arcCheck}>✓</Text>
+                      <View style={styles.poolTextWrap}>
+                        <Text style={styles.arcText}>{g.text}</Text>
+                        <Text style={styles.arcDate}>{fmtDoneAt(g.doneAt)} 완료</Text>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+                <Pressable style={styles.ghost} onPress={() => setShowArchive(false)}>
+                  <Text style={styles.ghostText}>← 달력으로</Text>
+                </Pressable>
+              </>
+            ) : peek ? (
               /* 지난 기록 — 보기 전용. 고치는 버튼은 일부러 없다 */
               <>
                 <Text style={styles.calTitle}>{fmtDay(peekKey)}</Text>
@@ -909,6 +939,11 @@ export default function App() {
                 </View>
                 {hasDone ? (
                   <Text style={styles.calHint}>✓ 표시된 날을 누르면 그날 기록을 볼 수 있어요</Text>
+                ) : null}
+                {archive.length > 0 ? (
+                  <Pressable style={styles.arcLink} onPress={() => { setPeekKey(null); setShowArchive(true); }}>
+                    <Text style={styles.arcLinkText}>🎯 완료함 · {archive.length}개</Text>
+                  </Pressable>
                 ) : null}
               </>
             )}
@@ -1080,6 +1115,19 @@ const styles = StyleSheet.create({
   calDayText: { fontSize: 12, color: '#6B6480' },
   calDayTextDone: { color: '#fff', fontWeight: '800' },
   calHint: { fontSize: 12, color: '#a49dba', fontWeight: '600', textAlign: 'center', marginTop: 12 },
+
+  // 완료함
+  arcLink: { alignSelf: 'center', paddingVertical: 10, paddingHorizontal: 14, marginTop: 6 },
+  arcLinkText: { fontSize: 13.5, fontWeight: '800', color: '#7C6BFF' },
+  arcLead: { fontSize: 12.5, color: '#a49dba', fontWeight: '600', marginTop: -6, marginBottom: 14 },
+  arcList: { gap: 8 },
+  arcRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    backgroundColor: '#F3F0FF', borderRadius: 16, paddingHorizontal: 16, paddingVertical: 14,
+  },
+  arcCheck: { fontSize: 15, fontWeight: '900', color: '#34C77B' },
+  arcText: { fontSize: 16, fontWeight: '800', color: '#2B2340', lineHeight: 22 },
+  arcDate: { fontSize: 12.5, fontWeight: '700', color: '#a49dba', marginTop: 3 },
 
   // 지난 기록 (읽기 전용)
   peekTask: { fontSize: 20, fontWeight: '900', color: '#2B2340', lineHeight: 28, marginTop: 2 },
